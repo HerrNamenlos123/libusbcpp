@@ -45,14 +45,21 @@ project "libusbcpp"
 
     -- Include directories
     local _includedirs = { 
-        _SCRIPT_DIR .. "/include"
+        _SCRIPT_DIR .. "/include",
+        _SCRIPT_DIR .. "/modules/libusb/msvc",
+        _SCRIPT_DIR .. "/modules/libusb/libusb"
     }
     includedirs (_includedirs)
+    includedirs ("include_private")
 
     
     -- Main source files
     files ({ "include/**", "src/**" })
 
+    -- libusb source files
+    files ({ "modules/libusb/libusb/*.h" })
+    files ({ "modules/libusb/libusb/*.c" })
+    files ({ "modules/libusb/msvc/config.h" })
 
 
 
