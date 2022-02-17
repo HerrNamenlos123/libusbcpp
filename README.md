@@ -27,3 +27,13 @@ includedirs (LIBUSBCPP_INCLUDE_DIRS)
 libdirs (LIBUSBCPP_LINK_DIRS)
 links (LIBUSBCPP_LINKS)
 ```
+
+## Example
+
+```C++
+#include "libusbcpp.h"
+
+int main() {
+    
+}
+```
