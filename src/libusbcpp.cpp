@@ -87,9 +87,9 @@ namespace libusbcpp {
 
 
 
-    // ========================================
-    // ===      libusbcpp::context class    ===
-    // ========================================
+    // ==============================================
+    // ===      libusbcpp::basic_context class    ===
+    // ==============================================
 
     context::context() {
         LOG_DEBUG("Creating libusb context");
@@ -117,7 +117,7 @@ namespace libusbcpp {
     // ===                Device class                  ===
     // ====================================================
 
-    device::device(libusb_device_handle* handle) {
+    basic_device::basic_device(libusb_device_handle* handle) {
         this->handle = handle;
         if (!handle) {
             LOG_ERROR("Cannot construct a device with a null handle!");
@@ -126,12 +126,12 @@ namespace libusbcpp {
         LOG_DEBUG("Device constructed with handle {:08X}", (uint64_t)handle);
     }
 
-    device::~device() {
+    basic_device::~basic_device() {
         LOG_DEBUG("Destroying device with handle {:08X}", (uint64_t)handle);
         close();
     }
 
-    bool device::claimInterface(int interface) {
+    bool basic_device::claimInterface(int interface) {
         std::lock_guard<std::mutex> lock(mutex);
 
         LOG_DEBUG("Device with handle {:08X} is claiming interface {}", (uint64_t)handle, interface);
@@ -140,19 +140,23 @@ namespace libusbcpp {
             return false;
         }
 
-        int error = libusb_kernel_driver_active(handle, interface);
-        if (error == 1) {
-            int error = libusb_detach_kernel_driver(handle, interface);
-            if (error != LIBUSB_SUCCESS) {
-                LOG_ERROR("Failed to claim interface: Kernel driver was active and it could not be detached: {}", getErrorMsg(error));
-                return false;
+#ifndef _WIN32
+        {        
+            int error = libusb_kernel_driver_active(handle, interface);
+            if (error == 1) {
+                int error = libusb_detach_kernel_driver(handle, interface);
+                if (error != LIBUSB_SUCCESS) {
+                    LOG_ERROR("Failed to claim interface: Kernel driver was active and it could not be detached: {}", getErrorMsg(error));
+                    return false;
+                }
+            }
+            else if (error < 0) {
+                LOG_ERROR("Error while checking if the kernel driver is active: {}", getErrorMsg(error));
             }
         }
-        else if (error < 0) {
-            LOG_ERROR("Error while checking if the kernel driver is active: {}");
-        }
+#endif
 
-        error = libusb_claim_interface(handle, interface);
+        int error = libusb_claim_interface(handle, interface);
         if (error != LIBUSB_SUCCESS) {
             LOG_ERROR("Failed to claim interface: {}", getErrorMsg(error));
             return false;
@@ -163,27 +167,7 @@ namespace libusbcpp {
         return true;
     }
 
-    void device::close() {
-        std::lock_guard<std::mutex> lock(mutex);
-
-        if (open) {
-            return;
-        }
-
-        LOG_DEBUG("Closing device");
-        for (int interface : interfaces) {
-            LOG_DEBUG("Releasing interface {}", interface);
-            int error = libusb_release_interface(handle, interface);
-            if (error != LIBUSB_SUCCESS) {
-                LOG_ERROR("Error while closing device: Can't release interface {}: {}", interface, getErrorMsg(error));
-            }
-        }
-        libusb_close(handle);
-        open = false;
-        LOG_DEBUG("Device closed");
-    }
-
-    deviceInfo device::getInfo() {
+    deviceInfo basic_device::getInfo() {
         std::lock_guard<std::mutex> lock(mutex);
 
         LOG_TRACE("Requesting device getInfo");
@@ -225,7 +209,7 @@ namespace libusbcpp {
         return device;
     }
 
-    std::vector<uint8_t> device::bulkRead(size_t expectedLength, uint16_t endpoint, uint32_t timeout) {
+    std::vector<uint8_t> basic_device::bulkRead(size_t expectedLength, uint16_t endpoint, uint32_t timeout) {
         std::lock_guard<std::mutex> lock(mutex);
 
         LOG_TRACE("device::bulkRead");
@@ -238,7 +222,11 @@ namespace libusbcpp {
         std::vector<uint8_t> buffer(expectedLength, 0);
         LOG_TRACE("libusb_bulk_transfer on device {:08X} to endpoint {:02X}", (uint64_t)handle, endpoint);
         int error = libusb_bulk_transfer(handle, (endpoint | LIBUSB_ENDPOINT_IN), &buffer[0], (int)expectedLength, &transferred, timeout);
-        if (error != LIBUSB_SUCCESS) {
+        if (error == LIBUSB_ERROR_IO) {
+            lostConnection();
+            return {};
+        }
+        else if (error != LIBUSB_SUCCESS) {
             LOG_ERROR("Error while reading from device {:08X}: {}", (uint64_t)handle, getErrorMsg(error));
             return {};
         }
@@ -248,15 +236,15 @@ namespace libusbcpp {
         return buffer;
     }
 
-    size_t device::bulkWrite(std::vector<uint8_t> data, uint16_t endpoint, uint32_t timeout) {
+    size_t basic_device::bulkWrite(std::vector<uint8_t> data, uint16_t endpoint, uint32_t timeout) {
         return bulkWrite((uint8_t*)&data[0], data.size(), endpoint, timeout);
     }
 
-    size_t device::bulkWrite(const std::string& data, uint16_t endpoint, uint32_t timeout) {
+    size_t basic_device::bulkWrite(const std::string& data, uint16_t endpoint, uint32_t timeout) {
         return bulkWrite((uint8_t*)data.c_str(), data.length(), endpoint, timeout);
     }
 
-    size_t device::bulkWrite(uint8_t* data, size_t length, uint16_t endpoint, uint32_t timeout) {
+    size_t basic_device::bulkWrite(uint8_t* data, size_t length, uint16_t endpoint, uint32_t timeout) {
         std::lock_guard<std::mutex> lock(mutex);
 
         LOG_TRACE("device::bulkWrite");
@@ -268,13 +256,37 @@ namespace libusbcpp {
         int transferred = 0;
         LOG_TRACE("libusb_bulk_transfer on device {:08X} to endpoint {:02X}", (uint64_t)handle, endpoint);
         int error = libusb_bulk_transfer(handle, (endpoint | LIBUSB_ENDPOINT_OUT), data, (int)length, &transferred, timeout);
-        if (error != LIBUSB_SUCCESS) {
+        if (error == LIBUSB_ERROR_IO) {
+            lostConnection();
+            return -1;
+        }
+        else if (error != LIBUSB_SUCCESS) {
             LOG_ERROR("Error while writing to device {:08X}: {}", (uint64_t)handle, getErrorMsg(error));
             return -1;
         }
 
         LOG_TRACE("device::bulkWrite done");
         return transferred;
+    }
+
+    void basic_device::close() {
+
+        LOG_DEBUG("Closing device");
+        for (int interface : interfaces) {
+            LOG_DEBUG("Releasing interface {}", interface);
+            int error = libusb_release_interface(handle, interface);
+            if (error != LIBUSB_SUCCESS) {
+                LOG_ERROR("Warning while closing device: Can't release interface {}: {}", interface, getErrorMsg(error));
+            }
+        }
+        libusb_close(handle);
+        open = false;
+        LOG_DEBUG("Device closed");
+    }
+
+    void basic_device::lostConnection() {
+        LOG_DEBUG("Lost connection to device {:08X}", (uint64_t)handle);
+        close();
     }
 
 
@@ -286,19 +298,20 @@ namespace libusbcpp {
     // ===               General functions              ===
     // ====================================================
 
-    std::shared_ptr<device> findDevice(const context& ctx, uint16_t vendorID, uint16_t productID) {
+    std::vector<device> findDevice(const context& ctx, uint16_t vendorID, uint16_t productID) {
         std::lock_guard<std::mutex> lock(scanMutex);
         LOG_DEBUG("Looking for device vid={:04X} pid={:04X}", vendorID, productID);
 
         libusb_device** rawDeviceList;
         LOG_TRACE("Requesting device list");
-        size_t count = libusb_get_device_list(ctx, &rawDeviceList);
+        size_t count = libusb_get_device_list((libusb_context*)ctx, &rawDeviceList);
 
         if (count < 0) {
             LOG_ERROR("Failed to retrieve device list: {}", getErrorMsg((int)count));
-            return nullptr;
+            return {};
         }
 
+        std::vector<device> devices;
         for (size_t i = 0; i < count; i++) {
             libusb_device* rawDevice = rawDeviceList[i];
 
@@ -320,22 +333,19 @@ namespace libusbcpp {
             LOG_TRACE("Trying to open device");
             error = libusb_open(rawDevice, &handle);
             if (error != LIBUSB_SUCCESS) {
-                LOG_WARN("Failed: Device vid={:04X} pid={:04X} was found, but could not be opened: {}", vendorID, productID, getErrorMsg(error));
+                LOG_TRACE("Failed: Device vid={:04X} pid={:04X} was found, but could not be opened: {}", vendorID, productID, getErrorMsg(error));
                 continue;   // Jump back to top
             }
 
-            // Device is opened, return it
-            LOG_TRACE("Freeing device list");
-            libusb_free_device_list(rawDeviceList, 1);
             LOG_DEBUG("Device opened successfully");
-            return std::make_shared<device>(handle);
+            devices.emplace_back(std::make_shared<basic_device>(handle));
         }
 
         LOG_TRACE("Freeing device list");
         libusb_free_device_list(rawDeviceList, 1);
 
-        LOG_WARN("Cannot open device vid={:04X} pid={:04X}: No valid candidate", vendorID, productID);
-        return nullptr;
+        LOG_DEBUG("Opened {} devices", devices.size());
+        return devices;
     }
 
 

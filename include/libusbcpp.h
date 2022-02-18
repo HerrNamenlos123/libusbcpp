@@ -42,6 +42,8 @@ namespace libusbcpp {
 
 namespace libusbcpp {
 
+
+
 	// ============================================
 	// ===      libusbcpp::deviceInfo struct    ===
 	// ============================================
@@ -55,9 +57,9 @@ namespace libusbcpp {
 
 
 
-	// ========================================
-	// ===      libusbcpp::context class    ===
-	// ========================================
+	// ==============================================
+	// ===      libusbcpp::basic_context class    ===
+	// ==============================================
 
     class context {
     public:
@@ -76,17 +78,16 @@ namespace libusbcpp {
 
 
 
-	// =======================================
-	// ===      libusbcpp::device class    ===
-	// =======================================
+	// =============================================
+	// ===      libusbcpp::basic_device class    ===
+	// =============================================
 
-	class device {
+	class basic_device {
 	public:
-		device(libusb_device_handle* handle);
-		~device();
+		basic_device(libusb_device_handle* handle);
+		~basic_device();
 
 		bool claimInterface(int interface);
-		void close();
 
 		deviceInfo getInfo();
 
@@ -95,15 +96,20 @@ namespace libusbcpp {
 		size_t bulkWrite(const std::string& data, uint16_t endpoint, uint32_t timeout = 1000);
 		size_t bulkWrite(uint8_t* data, size_t length, uint16_t endpoint, uint32_t timeout = 1000);
 
-		device(device const&) = delete;
-		void operator=(device const&) = delete;
+		basic_device(basic_device const&) = delete;
+		void operator=(basic_device const&) = delete;
 
 	private:
+		void close();
+		void lostConnection();
+
 		libusb_device_handle* handle = nullptr;
 		std::vector<int> interfaces;
 		bool open = true;
 		std::mutex mutex;
 	};
+
+	typedef std::shared_ptr<basic_device> device;
 
 
 
@@ -114,6 +120,6 @@ namespace libusbcpp {
 	// ===               General functions              ===
 	// ====================================================
 
-	std::shared_ptr<device> findDevice(const context& ctx, uint16_t vendorID, uint16_t productID);
+	std::vector<device> findDevice(const context& ctx, uint16_t vendorID, uint16_t productID);
 
 }
