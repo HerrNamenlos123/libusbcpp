@@ -11,6 +11,7 @@ This library can be included by a premake-script. Create a repository with a pre
 Add the library as a git submodule to your repository:  
 ```
 git submodule add https://github.com/HerrNamenlos123/libusbcpp.git modules/libusbcpp
+git submodule update --init --recursive
 ```
 Later you can update your submodule to the latest version with  
 ```
