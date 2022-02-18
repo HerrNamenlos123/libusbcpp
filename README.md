@@ -43,7 +43,28 @@ links (LIBUSBCPP_LINKS)
 #include "libusbcpp.h"
 
 int main() {
-    
+    libusbcpp::context context;
+	{
+		std::vector<libusbcpp::device> _devices;
+		while (true) {
+			libusbcpp::setLogLevel(libusbcpp::LOG_LEVEL_DEBUG);
+
+			auto& devices = libusbcpp::findDevice(context, 0x1209, 0x0D32);
+			for (auto& device : devices) {
+				if (device) {
+					std::cout << "Device opened" << std::endl;
+					if (device->claimInterface(2)) {
+						_devices.push_back(device);
+					}
+				}
+				else {
+					std::cout << "No device found" << std::endl;
+				}
+			}
+
+			std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+		}
+	}
 }
 ```
 
