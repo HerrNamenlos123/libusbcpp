@@ -47,3 +47,5 @@ int main() {
 }
 ```
 
+You can define the macro `LIBUSBCPP_NO_LOGGING` to disable logging completely.
+
