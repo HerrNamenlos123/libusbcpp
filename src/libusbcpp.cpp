@@ -3,10 +3,9 @@
 #include "libusb.h"
 
 #include "libusbcpp.h"
+#include "magic_enum.hpp"
 #include "spdlog/spdlog.h"
 #include "spdlog/sinks/stdout_color_sinks.h"
-
-#include <stdexcept>
 
 
 #define LIBUSBCPP_DEFAULT_LOG_LEVEL spdlog::level::warn
@@ -80,6 +79,12 @@ namespace libusbcpp {
 
     std::mutex scanMutex;
 
+    std::string_view getErrorMsg(int error) {
+        return magic_enum::enum_name((libusb_error)error);
+    }
+
+
+
 
 
     // ========================================
@@ -126,29 +131,36 @@ namespace libusbcpp {
         close();
     }
 
-    void device::claimInterface(int interface) {
+    bool device::claimInterface(int interface) {
         std::lock_guard<std::mutex> lock(mutex);
 
         LOG_DEBUG("Device with handle {:08X} is claiming interface {}", (uint64_t)handle, interface);
         if (!open) {
-            LOG_DEBUG("Device is not open anymore, returning");
-            return;
+            LOG_ERROR("Failed to claim interface: Device is not open anymore");
+            return false;
         }
 
-        if (libusb_kernel_driver_active(handle, interface) == 1) {
-            if (libusb_detach_kernel_driver(handle, interface) != LIBUSB_SUCCESS) {
-                LOG_ERROR("Failed to claim interface: Kernel driver was active and it could not be detached");
-                throw std::runtime_error("[libusbcpp]: Failed to claim interface: Can't detach Kernel driver");
+        int error = libusb_kernel_driver_active(handle, interface);
+        if (error == 1) {
+            int error = libusb_detach_kernel_driver(handle, interface);
+            if (error != LIBUSB_SUCCESS) {
+                LOG_ERROR("Failed to claim interface: Kernel driver was active and it could not be detached: {}", getErrorMsg(error));
+                return false;
             }
         }
+        else if (error < 0) {
+            LOG_ERROR("Error while checking if the kernel driver is active: {}");
+        }
 
-        if (libusb_claim_interface(handle, interface) < 0) {
-            LOG_ERROR("Failed to claim interface: Permission denied");
-            throw std::runtime_error("[libusbcpp]: Failed to claim interface: Permission denied");
+        error = libusb_claim_interface(handle, interface);
+        if (error != LIBUSB_SUCCESS) {
+            LOG_ERROR("Failed to claim interface: {}", getErrorMsg(error));
+            return false;
         }
 
         interfaces.push_back(interface);
         LOG_DEBUG("Interface claimed successfully");
+        return true;
     }
 
     void device::close() {
@@ -161,7 +173,10 @@ namespace libusbcpp {
         LOG_DEBUG("Closing device");
         for (int interface : interfaces) {
             LOG_DEBUG("Releasing interface {}", interface);
-            libusb_release_interface(handle, interface);
+            int error = libusb_release_interface(handle, interface);
+            if (error != LIBUSB_SUCCESS) {
+                LOG_ERROR("Error while closing device: Can't release interface {}: {}", interface, getErrorMsg(error));
+            }
         }
         libusb_close(handle);
         open = false;
@@ -186,14 +201,20 @@ namespace libusbcpp {
 
         struct libusb_device_descriptor desc;
         LOG_TRACE("Requesting device descriptor");
-        if (libusb_get_device_descriptor(dev, &desc) != LIBUSB_SUCCESS) {
-            LOG_ERROR("Can't retrieve device info: Device descriptor is invalid");
+        int error = libusb_get_device_descriptor(dev, &desc);
+        if (error != LIBUSB_SUCCESS) {
+            LOG_ERROR("Can't retrieve device info: Device descriptor is invalid: {}", getErrorMsg(error));
             return deviceInfo();
         }
 
         unsigned char buffer[1024];
         LOG_TRACE("Requesting ascii string descriptor");
-        size_t length = libusb_get_string_descriptor_ascii(handle, desc.iProduct, buffer, sizeof(buffer));
+        int length = libusb_get_string_descriptor_ascii(handle, desc.iProduct, buffer, sizeof(buffer));
+
+        if (length < 0) {
+            LOG_ERROR("Can't retrieve device info: Ascii device descriptor is invalid: {}", getErrorMsg(length));
+            return deviceInfo();
+        }
 
         deviceInfo device;
         device.vendorID = desc.idVendor;
@@ -216,8 +237,9 @@ namespace libusbcpp {
         int transferred = 0;
         std::vector<uint8_t> buffer(expectedLength, 0);
         LOG_TRACE("libusb_bulk_transfer on device {:08X} to endpoint {:02X}", (uint64_t)handle, endpoint);
-        if (libusb_bulk_transfer(handle, (endpoint | LIBUSB_ENDPOINT_IN), &buffer[0], (int)expectedLength, &transferred, timeout) != LIBUSB_SUCCESS) {
-            LOG_ERROR("Error while reading from device {:08X}", (uint64_t)handle);
+        int error = libusb_bulk_transfer(handle, (endpoint | LIBUSB_ENDPOINT_IN), &buffer[0], (int)expectedLength, &transferred, timeout);
+        if (error != LIBUSB_SUCCESS) {
+            LOG_ERROR("Error while reading from device {:08X}: {}", (uint64_t)handle, getErrorMsg(error));
             return {};
         }
 
@@ -245,9 +267,9 @@ namespace libusbcpp {
 
         int transferred = 0;
         LOG_TRACE("libusb_bulk_transfer on device {:08X} to endpoint {:02X}", (uint64_t)handle, endpoint);
-        int errorCode = libusb_bulk_transfer(handle, (endpoint | LIBUSB_ENDPOINT_OUT), data, (int)length, &transferred, timeout);
-        if (errorCode != LIBUSB_SUCCESS) {
-            LOG_ERROR("Error while writing to device {:08X}", (uint64_t)handle);
+        int error = libusb_bulk_transfer(handle, (endpoint | LIBUSB_ENDPOINT_OUT), data, (int)length, &transferred, timeout);
+        if (error != LIBUSB_SUCCESS) {
+            LOG_ERROR("Error while writing to device {:08X}: {}", (uint64_t)handle, getErrorMsg(error));
             return -1;
         }
 
@@ -260,166 +282,20 @@ namespace libusbcpp {
 
 
 
-
-
-    // ========================================================
-    // ===              HotplugListener class               ===
-    // ========================================================
-
-    hotplugListener::~hotplugListener() {
-        stop();
-    }
-
-    void hotplugListener::start(std::function<void(std::shared_ptr<device> device)> onConnect, float interval) {
-        using namespace std::placeholders;
-
-        running = true;
-        LOG_TRACE("Hotpluglistener: Starting listener, detaching thread");
-        listener = std::thread(std::bind(&hotplugListener::listen, this, _1, _2), onConnect, interval);
-    }
-
-    void hotplugListener::scanOnce(std::function<void(std::shared_ptr<device> device)> onConnect) {
-        std::lock_guard<std::mutex> lock(mutex);
-
-        try {
-            LOG_TRACE("HotplugListener: Scanning for devices");
-            auto newDevices = scanDevices(context);
-            for (auto& device : newDevices) {
-                if (!isDeviceKnown(device)) {
-                    LOG_DEBUG("HotplugListener: Found device vid={:04X} pid={:04X}, trying to connect", device.vendorID, device.productID);
-                    auto dev = openDevice(context, device.vendorID, device.productID);
-                    if (dev) {
-                        onConnect(dev);
-                        LOG_TRACE("HotplugListener: User callback finished");
-                    }
-                    else {
-                        LOG_ERROR("HotplugListener: Cannot open device vid={:04X} pid={:04X}", device.vendorID, device.productID);
-                    }
-                }
-            }
-            LOG_TRACE("HotplugListener: Scan finished");
-
-            knownDevices.clear();
-            knownDevices = std::move(newDevices);
-        }
-        catch (const std::exception& e) {
-            LOG_ERROR("HotplugListener: Thread exception: {}", e.what());
-        }
-    }
-
-    void hotplugListener::stop() {
-        if (running) {
-            running = false;
-            LOG_TRACE("Hotpluglistener: Stopping and joining thread");
-            listener.join();
-        }
-    }
-
-    bool hotplugListener::isDeviceKnown(deviceInfo& info) {
-        for (auto& device : knownDevices) {
-            if (device.vendorID == info.vendorID && device.productID == info.productID) {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    void hotplugListener::listen(std::function<void(std::shared_ptr<device> device)> onConnect, float interval) {
-
-        LOG_TRACE("Hotpluglistener: Thread started");
-        while (running) {
-
-            LOG_TRACE("Hotpluglistener: Scanning once");
-            scanOnce(onConnect);
-
-            LOG_TRACE("Hotpluglistener: Scanning done, sleeping {}s", interval);
-            std::this_thread::sleep_for(std::chrono::milliseconds((uint64_t)(interval * 1000.f)));
-
-        }
-        LOG_TRACE("Hotpluglistener: Thread stopped");
-    }
-
-
-
-
-
-
     // ====================================================
     // ===               General functions              ===
     // ====================================================
 
-    std::vector<deviceInfo> scanDevices(const context& ctx) {
+    std::shared_ptr<device> findDevice(const context& ctx, uint16_t vendorID, uint16_t productID) {
         std::lock_guard<std::mutex> lock(scanMutex);
-        LOG_DEBUG("Scanning for devices...");
+        LOG_DEBUG("Looking for device vid={:04X} pid={:04X}", vendorID, productID);
 
         libusb_device** rawDeviceList;
         LOG_TRACE("Requesting device list");
         size_t count = libusb_get_device_list(ctx, &rawDeviceList);
 
         if (count < 0) {
-            LOG_ERROR("Failed to retrieve device list");
-            return {};
-        }
-
-        std::vector<deviceInfo> devices;
-        for (size_t i = 0; i < count; i++) {
-            libusb_device* rawDevice = rawDeviceList[i];
-
-            // Get device information
-            struct libusb_device_descriptor desc;
-            LOG_TRACE("Requesting device descriptor");
-            if (libusb_get_device_descriptor(rawDevice, &desc) != LIBUSB_SUCCESS) {
-                LOG_TRACE("Failed to retrieve device descriptor, skipping device entry");
-                continue;   // Jump back to top
-            }
-
-            // Open device for reading
-            libusb_device_handle* handle = NULL;
-            LOG_TRACE("Trying to open device");
-            if (libusb_open(rawDevice, &handle) != LIBUSB_SUCCESS) {
-                LOG_TRACE("Failed to open device vid={:04X} pid={:04X}, skipping device entry", desc.idVendor, desc.idProduct);
-                continue;   // Jump back to top
-            }
-
-            // Parse the description text
-            unsigned char buffer[1024];
-            LOG_TRACE("Requesting ascii string descriptor");
-            size_t length = libusb_get_string_descriptor_ascii(handle, desc.iProduct, buffer, sizeof(buffer));
-
-            LOG_TRACE("Closing device");
-            libusb_close(handle);
-
-            if (length < 0) {
-                LOG_TRACE("Ascii string descriptor is invalid, skipping device entry");
-                continue;
-            }
-
-            deviceInfo device;
-            device.vendorID = desc.idVendor;
-            device.productID = desc.idProduct;
-            device.description = std::string((const char*)buffer, length);
-
-            devices.push_back(std::move(device));
-        }
-
-        LOG_TRACE("Freeing list");
-        libusb_free_device_list(rawDeviceList, 1);
-
-        LOG_DEBUG("Scanning done, found {} devices", devices.size());
-        return devices;
-    }
-
-    std::shared_ptr<device> openDevice(const context& ctx, uint16_t vendorID, uint16_t productID) {
-        std::lock_guard<std::mutex> lock(scanMutex);
-        LOG_DEBUG("Opening device vid={:04X} pid={:04X}", vendorID, productID);
-
-        libusb_device** rawDeviceList;
-        LOG_TRACE("Requesting device list");
-        size_t count = libusb_get_device_list(ctx, &rawDeviceList);
-
-        if (count < 0) {
-            LOG_ERROR("Failed to retrieve device list");
+            LOG_ERROR("Failed to retrieve device list: {}", getErrorMsg((int)count));
             return nullptr;
         }
 
@@ -429,8 +305,9 @@ namespace libusbcpp {
             // Get device information
             struct libusb_device_descriptor desc;
             LOG_TRACE("Requesting device descriptor");
-            if (libusb_get_device_descriptor(rawDevice, &desc) != LIBUSB_SUCCESS) {
-                LOG_TRACE("Failed to retrieve device descriptor, skipping device entry");
+            int error = libusb_get_device_descriptor(rawDevice, &desc);
+            if (error != LIBUSB_SUCCESS) {
+                LOG_TRACE("Failed to retrieve device descriptor, skipping device entry: {}", getErrorMsg(error));
                 continue;   // Jump back to top
             }
 
@@ -441,8 +318,9 @@ namespace libusbcpp {
             // Open the device
             libusb_device_handle* handle = nullptr;
             LOG_TRACE("Trying to open device");
-            if (libusb_open(rawDevice, &handle) < 0) {
-                LOG_TRACE("Failed: Device vid={:04X} pid={:04X} was found, but could not be opened", vendorID, productID);
+            error = libusb_open(rawDevice, &handle);
+            if (error != LIBUSB_SUCCESS) {
+                LOG_WARN("Failed: Device vid={:04X} pid={:04X} was found, but could not be opened: {}", vendorID, productID, getErrorMsg(error));
                 continue;   // Jump back to top
             }
 

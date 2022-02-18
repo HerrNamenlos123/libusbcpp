@@ -85,7 +85,7 @@ namespace libusbcpp {
 		device(libusb_device_handle* handle);
 		~device();
 
-		void claimInterface(int interface);
+		bool claimInterface(int interface);
 		void close();
 
 		deviceInfo getInfo();
@@ -109,41 +109,11 @@ namespace libusbcpp {
 
 
 
-	// ========================================================
-	// ===              HotplugListener class               ===
-	// ========================================================
-
-	class hotplugListener {
-	public:
-		hotplugListener(context& ctx) : context(ctx) {}
-		~hotplugListener();
-
-		void start(std::function<void(std::shared_ptr<device> device)> onConnect, float interval = 0.2f);
-		void scanOnce(std::function<void(std::shared_ptr<device> device)> onConnect);
-		void stop();
-
-	private:
-		bool isDeviceKnown(deviceInfo& info);
-		void listen(std::function<void(std::shared_ptr<device> device)> onConnect, float interval);
-
-		std::thread listener;
-		std::atomic<bool> running = false;
-		std::vector<deviceInfo> knownDevices;
-		context& context;
-		std::mutex mutex;
-	};
-
-
-
-
-
 
 	// ====================================================
 	// ===               General functions              ===
 	// ====================================================
 
-	std::vector<deviceInfo> scanDevices(const context& ctx);
-
-	std::shared_ptr<device> openDevice(const context& ctx, uint16_t vendorID, uint16_t productID);
+	std::shared_ptr<device> findDevice(const context& ctx, uint16_t vendorID, uint16_t productID);
 
 }
