@@ -47,7 +47,8 @@ project "libusbcpp"
     local _includedirs = { 
         _SCRIPT_DIR .. "/include",
         _SCRIPT_DIR .. "/modules/libusb/msvc",
-        _SCRIPT_DIR .. "/modules/libusb/libusb"
+        _SCRIPT_DIR .. "/modules/libusb/libusb",
+        _SCRIPT_DIR .. "/modules/libusb/libusb/os"
     }
     includedirs (_includedirs)
     includedirs ("include_private")
@@ -60,6 +61,11 @@ project "libusbcpp"
     files ({ "modules/libusb/libusb/*.h" })
     files ({ "modules/libusb/libusb/*.c" })
     files ({ "modules/libusb/msvc/config.h" })
+    files ({ "modules/libusb/libusb/os/events_windows.c", "modules/libusb/libusb/os/events_windows.h" })
+    files ({ "modules/libusb/libusb/os/threads_windows.c", "modules/libusb/libusb/os/threads_windows.h" })
+    files ({ "modules/libusb/libusb/os/windows_common.c", "modules/libusb/libusb/os/windows_common.h" })
+    files ({ "modules/libusb/libusb/os/windows_usbdk.c", "modules/libusb/libusb/os/windows_usbdk.h" })
+    files ({ "modules/libusb/libusb/os/windows_winusb.c", "modules/libusb/libusb/os/windows_winusb.h" })
 
 
 
