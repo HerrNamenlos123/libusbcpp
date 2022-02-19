@@ -4,6 +4,8 @@
 
 #include "libusbcpp.h"
 #include "magic_enum.hpp"
+
+#define SPDLOG_COMPILED_LIB
 #include "spdlog/spdlog.h"
 #include "spdlog/sinks/stdout_color_sinks.h"
 
@@ -271,17 +273,19 @@ namespace libusbcpp {
 
     void basic_device::close() {
 
-        LOG_DEBUG("Closing device");
-        for (int interface : interfaces) {
-            LOG_DEBUG("Releasing interface {}", interface);
-            int error = libusb_release_interface(handle, interface);
-            if (error != LIBUSB_SUCCESS) {
-                LOG_ERROR("Warning while closing device: Can't release interface {}: {}", interface, getErrorMsg(error));
+        if (open) {
+            LOG_DEBUG("Closing device");
+            for (int interface : interfaces) {
+                LOG_DEBUG("Releasing interface {}", interface);
+                int error = libusb_release_interface(handle, interface);
+                if (error != LIBUSB_SUCCESS) {
+                    LOG_ERROR("Warning while closing device: Can't release interface {}: {}", interface, getErrorMsg(error));
+                }
             }
+            libusb_close(handle);
+            open = false;
+            LOG_DEBUG("Device closed");
         }
-        libusb_close(handle);
-        open = false;
-        LOG_DEBUG("Device closed");
     }
 
     void basic_device::lostConnection() {
