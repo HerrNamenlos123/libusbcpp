@@ -1,125 +1,96 @@
 #pragma once
 
-#include "inttypes.h"
-
 #include <string>
 #include <vector>
 #include <memory>
 #include <mutex>
 #include <thread>
+#include <optional>
 #include <functional>
+#include <cinttypes>
 
-struct libusb_context;
-struct libusb_device_handle;
+#define LIBUSBCPP_DEFAULT_BUFFER_SIZE (1024 * 8)   // Default 8 kB buffer
+#define LIBUSBCPP_DEFAULT_TIMEOUT 1000             // Default 1 sec timeout
 
-
-
-
-// ==========================
-// ===      Logging       ===
-// ==========================
-
-#ifndef LIBUSBCPP_NO_LOGGING
-namespace libusbcpp {
-
-	enum LogLevel {
-		LOG_LEVEL_TRACE,
-		LOG_LEVEL_DEBUG,
-		LOG_LEVEL_INFO,
-		LOG_LEVEL_WARN,
-		LOG_LEVEL_ERROR,
-		LOG_LEVEL_CRITICAL
-	};
-
-	void setLogLevel(enum LogLevel logLevel);
-}
+#ifndef LIBUSBCPP_STATIC_LIB
+    #ifdef LIBUSBCPP_EXPORTS
+        #define LIBUSBCPP_API __declspec(dllexport)
+    #else
+        #define LIBUSBCPP_API __declspec(dllimport)
+    #endif
+#else
+    #define LIBUSBCPP_API
 #endif
 
+struct libusb_context;          // Forward declarations
+struct libusb_device_handle;
 
+namespace usb {
 
+    template<typename T>
+    using ref = std::reference_wrapper<T>;
 
-
-
-namespace libusbcpp {
-
-
-
-	// ============================================
-	// ===      libusbcpp::deviceInfo struct    ===
-	// ============================================
-
-	struct deviceInfo {
-		uint16_t vendorID = 0x00;
-		uint16_t productID = 0x00;
-		std::string description;
-	};
-
-
-
-
-	// ==============================================
-	// ===      libusbcpp::basic_context class    ===
-	// ==============================================
-
-    class context {
+    class LIBUSBCPP_API context {
     public:
         context();
         ~context();
 
         operator libusb_context*() const;
 
-        context(context const&) = delete;
+        context(context const&) = delete;           // Copying prohibited
         void operator=(context const&) = delete;
+
+        context(context&&) = default;               // Moving allowed
+        context& operator=(context&&) = default;
 
     private:
         libusb_context* _context = nullptr;
     };
 
+    struct LIBUSBCPP_API device_info {
+        uint16_t vendor_id = 0x00;
+        uint16_t product_id = 0x00;
+        std::string description;
+    };
 
-
-
-	// =============================================
-	// ===      libusbcpp::basic_device class    ===
-	// =============================================
-
-	class basic_device {
+	class LIBUSBCPP_API basic_device {
 	public:
-		basic_device(libusb_device_handle* handle);
+		explicit basic_device(libusb_device_handle* handle, usb::device_info  info);
 		~basic_device();
 
-		bool claimInterface(int interface);
+        device_info device_info;
 
-		deviceInfo getInfo();
+		bool claim_interface(int _interface);
 
-		std::vector<uint8_t> bulkRead(size_t expectedLength, uint16_t endpoint, uint32_t timeout = 1000);
-		size_t bulkWrite(std::vector<uint8_t> data, uint16_t endpoint, uint32_t timeout = 1000);
-		size_t bulkWrite(const std::string& data, uint16_t endpoint, uint32_t timeout = 1000);
-		size_t bulkWrite(uint8_t* data, size_t length, uint16_t endpoint, uint32_t timeout = 1000);
+        std::string bulk_read(uint16_t endpoint,
+                              size_t max_buffer_size = LIBUSBCPP_DEFAULT_BUFFER_SIZE,
+                              uint32_t timeout = LIBUSBCPP_DEFAULT_TIMEOUT);
+
+        // These return 0 on error
+		size_t bulk_write(std::vector<uint8_t> data, uint16_t endpoint, uint32_t timeout = LIBUSBCPP_DEFAULT_TIMEOUT);
+		size_t bulk_write(const std::string& data, uint16_t endpoint, uint32_t timeout = LIBUSBCPP_DEFAULT_TIMEOUT);
+		size_t bulk_write(uint8_t* data, size_t length, uint16_t endpoint, uint32_t timeout = LIBUSBCPP_DEFAULT_TIMEOUT);
 
 		basic_device(basic_device const&) = delete;
-		void operator=(basic_device const&) = delete;
+        basic_device& operator=(basic_device const&) = delete;
 
 	private:
+
+        size_t bulk_transfer(uint16_t endpoint, unsigned char* buffer, size_t max_buffer_size, uint32_t timeout);
+
 		void close();
-		void lostConnection();
+		void lost_connection();
+        bool detach_kernel_driver(int _interface);
 
 		libusb_device_handle* handle = nullptr;
-		std::vector<int> interfaces;
-		bool open = true;
-		std::mutex mutex;
+        std::vector<int> interfaces;
+
+		std::mutex mutex;   // Lock for all callable functions
 	};
 
 	typedef std::shared_ptr<basic_device> device;
 
-
-
-
-
-
-	// ====================================================
-	// ===               General functions              ===
-	// ====================================================
-
-	std::vector<device> findDevice(const context& ctx, uint16_t vendorID, uint16_t productID);
+    LIBUSBCPP_API std::vector<device_info> scan_devices(const std::optional<ref<context>>& context = std::nullopt);
+    LIBUSBCPP_API usb::device find_device(const context& context, uint16_t vendor_id, uint16_t product_id);
 
 }

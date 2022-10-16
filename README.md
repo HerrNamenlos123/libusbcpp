@@ -1,4 +1,4 @@
-# libusbcpp
+# usb
 
 This library is an object-oriented C++ wrapper around the official libusb-1.0 library.
 
@@ -10,12 +10,12 @@ This library can be included by a premake-script. Create a repository with a pre
 
 Add the library as a git submodule to your repository:  
 ```
-git submodule add https://github.com/HerrNamenlos123/libusbcpp.git modules/libusbcpp
+git submodule add https://github.com/HerrNamenlos123/usb.git modules/usb
 git submodule update --init --recursive
 ```
 Later you can update your submodule to the latest version with  
 ```
-git submodule update --remote modules/libusbcpp
+git submodule update --remote modules/usb
 ```
 Don't forget to always do a `--recursive`-clone of your repository!
 
@@ -25,14 +25,14 @@ Then include it from `premake5.lua`:
 
 ```lua
 -- Include the library
-include "modules/libusbcpp" -- Path to your submodule
+include "modules/usb" -- Path to your submodule
 ```
 
 This adds the project itself to the solution. After that use the following to link it to your project:
 
 ```lua
--- libusbcpp dependency
-dependson "libusbcpp"
+-- usb dependency
+dependson "usb"
 includedirs (LIBUSBCPP_INCLUDE_DIRS)
 libdirs (LIBUSBCPP_LINK_DIRS)
 links (LIBUSBCPP_LINKS)
@@ -41,20 +41,20 @@ links (LIBUSBCPP_LINKS)
 ## Example
 
 ```C++
-#include "libusbcpp.h"
+#include "usb.h"
 
 int main() {
-    libusbcpp::context context;
+    usb::context context;
 	{
-		std::vector<libusbcpp::device> _devices;
+		std::vector<usb::device> _devices;
 		while (true) {
-			libusbcpp::setLogLevel(libusbcpp::LOG_LEVEL_DEBUG);
+			usb::setLogLevel(usb::LOG_LEVEL_DEBUG);
 
-			auto& devices = libusbcpp::findDevice(context, 0x1209, 0x0D32);
+			auto& devices = usb::find_device(context, 0x1209, 0x0D32);
 			for (auto& device : devices) {
 				if (device) {
 					std::cout << "Device opened" << std::endl;
-					if (device->claimInterface(2)) {
+					if (device->claim_interface(2)) {
 						_devices.push_back(device);
 					}
 				}
@@ -69,5 +69,6 @@ int main() {
 }
 ```
 
-You can define the macro `LIBUSBCPP_NO_LOGGING` to disable logging completely.
+CMake `LIBUSBCPP_VERBOSE_LOGGING` can be used to enable `LOG`, `LOG_DEBUG` and `LOG_INFO`.  
+`LOG_WARN` and `LOG_ERROR` are always enabled.
 
