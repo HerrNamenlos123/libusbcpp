@@ -30,6 +30,16 @@ namespace usb {
     template<typename T>
     using ref = std::reference_wrapper<T>;
 
+    enum class state {
+        CLOSED,
+        IN_USE_OR_UNSUPPORTED,
+        INVALID_DRIVER,
+        OPEN
+    };
+
+    LIBUSBCPP_API const char* state_str(enum state state);
+    LIBUSBCPP_API void enable_logging(bool enable = true);
+
     class LIBUSBCPP_API context {
     public:
         context();
@@ -51,6 +61,7 @@ namespace usb {
         uint16_t vendor_id = 0x00;
         uint16_t product_id = 0x00;
         std::string description;
+        enum state state = usb::state::CLOSED;
     };
 
 	class LIBUSBCPP_API basic_device {
@@ -61,6 +72,7 @@ namespace usb {
         device_info device_info;
 
 		bool claim_interface(int _interface);
+        bool is_open();
 
         std::string bulk_read(uint16_t endpoint,
                               size_t max_buffer_size = LIBUSBCPP_DEFAULT_BUFFER_SIZE,
@@ -91,6 +103,8 @@ namespace usb {
 	typedef std::shared_ptr<basic_device> device;
 
     LIBUSBCPP_API std::vector<device_info> scan_devices(const std::optional<ref<context>>& context = std::nullopt);
-    LIBUSBCPP_API usb::device find_device(const context& context, uint16_t vendor_id, uint16_t product_id);
+    LIBUSBCPP_API std::vector<usb::device> find_devices(const context& context, uint16_t vendor_id, uint16_t product_id);
+    LIBUSBCPP_API std::vector<usb::device> find_valid_devices(const context& context, uint16_t vendor_id, uint16_t product_id);
+    LIBUSBCPP_API usb::device find_first_device(const context& context, uint16_t vendor_id, uint16_t product_id);
 
 }

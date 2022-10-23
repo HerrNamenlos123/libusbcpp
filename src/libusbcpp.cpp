@@ -11,6 +11,25 @@
 
 namespace usb {
 
+    LIBUSBCPP_API const char* state_str(enum state state) {
+        switch (state) {
+            case usb::state::CLOSED:
+                return "CLOSED";
+            case state::IN_USE_OR_UNSUPPORTED:
+                return "IN_USE_OR_UNSUPPORTED";
+            case state::INVALID_DRIVER:
+                return "INVALID_DRIVER";
+            case state::OPEN:
+                return "OPEN";
+            default:
+                return "INVALID_STATE";
+        }
+    }
+
+    LIBUSBCPP_API void enable_logging(bool enable) {
+        __enable_logging = enable;
+    }
+
     LIBUSBCPP_API context::context() {
         LOG_DEBUG("Creating libusb context");
         if (libusb_init(&_context) < 0) {
@@ -35,9 +54,10 @@ namespace usb {
 
 
     LIBUSBCPP_API basic_device::basic_device(libusb_device_handle* handle, usb::device_info info)
-      : handle(handle), device_info(std::move(info)) {
+      : handle(handle), device_info(std::move(info)
+    ) {
         if (!handle) {
-            THROW_AND_LOG("Cannot construct a device with a null handle!");
+            close();
         }
     }
 
@@ -66,6 +86,10 @@ namespace usb {
 
         interfaces.push_back(_interface);
         return true;
+    }
+
+    LIBUSBCPP_API bool basic_device::is_open() {
+        return (bool)handle;
     }
 
     LIBUSBCPP_API std::string basic_device::bulk_read(uint16_t endpoint, size_t max_buffer_size, uint32_t timeout) {
@@ -135,6 +159,9 @@ namespace usb {
             libusb_close(handle);
             handle = nullptr;
         }
+
+        if (device_info.state == state::OPEN)
+            device_info.state = state::CLOSED;
     }
 
     LIBUSBCPP_API void basic_device::lost_connection() {
@@ -166,9 +193,8 @@ namespace usb {
 
 
 
-    LIBUSBCPP_API void scan_and_process_devices(libusb_context* context,
-                                  const std::function<bool(device_info, libusb_device_handle*)>& callback)
-    {
+    LIBUSBCPP_API void scan_and_process_devices(
+                libusb_context* context, const std::function<bool(device_info, libusb_device_handle*)>& callback) {
         static std::mutex mutex;
         std::unique_lock<std::mutex> lock(mutex);
 
@@ -192,28 +218,41 @@ namespace usb {
             libusb_device_handle* device_handle = nullptr;
             status = libusb_open(device_list[i], &device_handle);
             if (status != LIBUSB_SUCCESS) {
-                LOG_ERROR("Opening device vid=0x%04X pid=0x%04X failed: %s",
-                          descriptor.idVendor, descriptor.idProduct, libusb_strerror(status));
+                LOG_ERROR("Opening device vid=0x%04X pid=0x%04X failed: (%d) %s",
+                          descriptor.idVendor, descriptor.idProduct, status, libusb_strerror(status));
+
+                device_info info;       // Opening failed, this usually means the libusb driver is not valid
+                info.vendor_id = descriptor.idVendor;           // Zadig utility can be used to fix it
+                info.product_id = descriptor.idProduct;
+                info.description = "";
+
+                if (status == LIBUSB_ERROR_NOT_SUPPORTED) {
+                    info.state = usb::state::IN_USE_OR_UNSUPPORTED;
+                    callback(info, nullptr);
+                }
+                else if (status == LIBUSB_ERROR_NOT_FOUND) {
+                    info.state = usb::state::INVALID_DRIVER;
+                    callback(info, nullptr);
+                }
+
                 continue;   // Jump back to top
             }
 
             unsigned char buffer[1024];
-            status = libusb_get_string_descriptor_ascii(device_handle, descriptor.iProduct, buffer, sizeof(buffer));
-            if (status != LIBUSB_SUCCESS) {
+            status = libusb_get_string_descriptor_ascii(device_handle, descriptor.iProduct,
+                                                        buffer, sizeof(buffer));
+            if (status < 0) {
                 LOG_ERROR("Reading string descriptor for device vid=0x%04X pid=0x%04X failed: %s",
                           descriptor.idVendor, descriptor.idProduct, libusb_strerror(status));
-                libusb_close(device_handle);
-                continue;   // Jump back to top
             }
 
             device_info info;
             info.vendor_id = descriptor.idVendor;
             info.product_id = descriptor.idProduct;
-            info.description = std::string((char*)buffer);
+            info.description = status >= 0 ? std::string((char*)buffer) : "";
+            info.state = usb::state::OPEN;
 
-            bool used = callback(info, device_handle);
-
-            if (!used) {
+            if (!callback(info, device_handle)) {
                 libusb_close(device_handle);
             }
         }
@@ -233,19 +272,40 @@ namespace usb {
         return device_list;
     }
 
-    LIBUSBCPP_API usb::device find_device(const context& context, uint16_t vendor_id, uint16_t product_id) {
+    LIBUSBCPP_API std::vector<usb::device> find_devices(
+            const context& context, uint16_t vendor_id, uint16_t product_id) {
+        std::vector<usb::device> devices;
 
-        libusb_device_handle* device_handle = nullptr;
-        device_info device_info;
-        scan_and_process_devices(context, [&] (const struct device_info& info, libusb_device_handle* handle) {
-            if (info.vendor_id == vendor_id && info.product_id == product_id && device_handle == nullptr) {
-                device_handle = handle;
-                device_info = info;
-                return true;        // Keep this device open, not the other ones
+        // Following function calls the callback for every entry
+        scan_and_process_devices(context,
+                                 [&] (const struct device_info& info, libusb_device_handle* handle){
+            if (info.vendor_id == vendor_id && info.product_id == product_id) { // Correct device id
+                devices.emplace_back(std::make_shared<usb::basic_device>(handle, info));
+                return true;    // Keep it open if it is valid
             }
-            return false;
+            return false;   // Wrong device
         });
 
-        return std::make_shared<basic_device>(device_handle, device_info);
+        return devices;
+    }
+
+    LIBUSBCPP_API std::vector<usb::device> find_valid_devices(
+            const context& context, uint16_t vendor_id, uint16_t product_id) {
+        std::vector<usb::device> devices;
+        auto all_devices = find_devices(context, vendor_id, product_id);
+        for (const auto& device : all_devices) {
+            if (device->device_info.state == state::OPEN) {
+                devices.emplace_back(device);
+            }
+        }
+        return devices;
+    }
+
+    LIBUSBCPP_API usb::device find_first_device(const context& context, uint16_t vendor_id, uint16_t product_id) {
+        auto devices = find_valid_devices(context, vendor_id, product_id);
+        for (auto& device : devices) {
+            return device;
+        }
+        return nullptr;
     }
 }
