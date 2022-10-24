@@ -2,6 +2,9 @@
 #include <iostream>
 #include "libusbcpp.h"
 
+//#include "libusb.h"   // You can still include the raw C-style libusb api if you need more features
+                        // Do not include it if you don't use it (see way below on how to get the device handle)
+
 // Create a libusbcpp context. This has to outlive any device objects.
 // Make sure that all devices are destroyed when the main function returns.
 // (Basically just means no usb::device's at the global scope)
@@ -44,10 +47,10 @@ int main() {
     // Then you can later close all the ones you don't want
     // It returns all devices (including invalid), that way you can inspect if the device is disconnected, or already in use.
     {
-        auto devices = usb::find_devices(context, vid, pid);
+        auto devices = usb::find_devices(vid, pid, context);
         printf("%zu devices found\n", devices.size());
         for (const auto &device: devices) {
-            printf("Device state: %s\n", usb::state_str(device->device_info.state));
+            printf("Device state: %s\n", usb::state_str(device->info.state));
         }
 
         // Here all devices are automatically closed, as the device array is destroyed and no device has been assigned
@@ -66,7 +69,7 @@ int main() {
         auto devices = usb::find_valid_devices(context, vid, pid);
         printf("%zu devices found\n", devices.size());
         for (const auto &device: devices) {
-            printf("Device state: %s\n", usb::state_str(device->device_info.state));
+            printf("Device state: %s\n", usb::state_str(device->info.state));
         }
 
         // Here all devices are automatically closed, as the device array is destroyed and no device has been assigned
@@ -85,13 +88,15 @@ int main() {
     {
         usb::device device = usb::find_first_device(context, vid, pid);
         if (device) {
-            printf("Device state: %s\n", usb::state_str(device->device_info.state));
+            printf("Device state: %s\n", usb::state_str(device->info.state));
+
+            // If you are not satisfied with the feature set, you can still use the original libusb api (if included above)
+            //libusb_device_handle* handle = device->get_handle();
+            //libusb_device* raw_device = libusb_get_device(handle);    // Now use it how you like
         }
         else {
             printf("No device found :(\n");
         }
-
-        // Now use your device
     }
 
     return 0;

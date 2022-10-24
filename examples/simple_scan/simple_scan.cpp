@@ -1,6 +1,8 @@
 
 #include <iostream>
 #include "libusbcpp.h"
+//#include "libusb.h"   // You can still include the raw C-style libusb api if you need more features
+//                         (see way below on how to get the device handle)
 
 // Create a libusbcpp context. This has to outlive any device objects.
 // Make sure that all devices are destroyed when the main function returns.
@@ -20,14 +22,14 @@ int main() {
     // Print the list
     std::cout << devices.size() << " devices found" << std::endl;
 
-    for (const auto& device_info : devices) {
-        if (device_info.state == usb::state::OPEN) {
+    for (const auto& info : devices) {
+        if (info.state == usb::state::OPEN) {
             printf(" -- 0x%04X/0x%04X -> %s\n",
-                   device_info.vendor_id, device_info.product_id, device_info.description.c_str());
+                   info.vendor_id, info.product_id, info.description.c_str());
         }
         else {
             printf(" -- 0x%04X/0x%04X (%s)\n",
-                   device_info.vendor_id, device_info.product_id, usb::state_str(device_info.state));
+                   info.vendor_id, info.product_id, usb::state_str(info.state));
         }
     }
 

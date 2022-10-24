@@ -54,7 +54,7 @@ namespace usb {
 
 
     LIBUSBCPP_API basic_device::basic_device(libusb_device_handle* handle, usb::device_info info)
-      : handle(handle), device_info(std::move(info)
+      : handle(handle), info(std::move(info)
     ) {
         if (!handle) {
             close();
@@ -90,6 +90,10 @@ namespace usb {
 
     LIBUSBCPP_API bool basic_device::is_open() {
         return (bool)handle;
+    }
+
+    LIBUSBCPP_API libusb_device_handle* basic_device::get_handle() {
+        return handle;
     }
 
     LIBUSBCPP_API std::string basic_device::bulk_read(uint16_t endpoint, size_t max_buffer_size, uint32_t timeout) {
@@ -160,8 +164,8 @@ namespace usb {
             handle = nullptr;
         }
 
-        if (device_info.state == state::OPEN)
-            device_info.state = state::CLOSED;
+        if (info.state == state::OPEN)
+            info.state = state::CLOSED;
     }
 
     LIBUSBCPP_API void basic_device::lost_connection() {
@@ -185,6 +189,128 @@ namespace usb {
         }
         return true;
     }
+
+
+
+
+
+
+
+
+    LIBUSBCPP_API generic_hotplug_handler::generic_hotplug_handler(opt_context context, int interval)
+      : context(context), interval(interval) {
+
+    }
+
+    LIBUSBCPP_API void generic_hotplug_handler::register_device_callback(const std::function<void(usb::device)>& _callback) {
+        register_device_callback(-1, -1, _callback);
+    }
+
+    LIBUSBCPP_API void generic_hotplug_handler::register_device_callback(
+            uint16_t vendor_id, uint16_t product_id, const std::function<void(usb::device)>& _callback) {
+        this->callback = _callback;
+        this->callback_vid = vendor_id;
+        this->callback_pid = product_id;
+    }
+
+    LIBUSBCPP_API void generic_hotplug_handler::update() {
+        auto now = std::chrono::high_resolution_clock::now();
+        auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_update).count();
+        if (elapsed_ms < interval)
+            return;
+        last_update = now;
+
+        update_devices();   // Only update in the specified interval
+    }
+
+    LIBUSBCPP_API void generic_hotplug_handler::update_devices() {
+
+        if (!callback)  // If no callback, don't do anything
+            return;
+
+        // Scan for new devices
+        auto devices_found = scan_devices(context);
+
+        // If usb id is specified, immediately open device no matter what (just try to open the device)
+        if (callback_vid != (uint16_t)-1 || callback_pid != (uint16_t)-1) {
+            for (auto& dev : devices_found) {
+                if (dev.vendor_id == callback_vid && dev.product_id == callback_pid) {  // Our usb id exists
+                    if (dev.state != state::IN_USE_OR_UNSUPPORTED) {    // Not if it is already in use
+                        // So, a device with our usb id exists, which is not yet in use
+                        usb::device device = find_first_device(dev.vendor_id, dev.product_id, context);
+                        if (device) {
+                            callback(device);
+                        }
+                    }
+                }
+            }
+            return;
+        }
+
+        // Otherwise, uo usb id is specified, only handle callback for a device we do not know yet
+
+        // Check for new devices
+        std::vector<device_info> new_devices;
+        for (auto& info : devices_found) {
+            if(std::find(old_devices.begin(), old_devices.end(), info) == old_devices.end()) {
+                new_devices.emplace_back(info);
+            }
+        }
+        old_devices = devices_found;
+
+        for (auto& dev : new_devices) {
+            if (dev.state != state::IN_USE_OR_UNSUPPORTED) {
+                usb::device device = find_first_device(dev.vendor_id, dev.product_id, context);
+                if (device) {
+                    callback(device);
+                }
+            }
+        }
+    }
+
+
+
+
+    LIBUSBCPP_API hotplug_handler::hotplug_handler(opt_context context, int interval)
+        : handler(context, interval), interval(interval) {
+
+    }
+
+    LIBUSBCPP_API hotplug_handler::~hotplug_handler() {
+        stop_async();
+    }
+
+    LIBUSBCPP_API void hotplug_handler::register_device_callback(const std::function<void(usb::device)>& callback) {
+        handler.register_device_callback(callback);
+    }
+
+    LIBUSBCPP_API void hotplug_handler::register_device_callback(uint16_t vendor_id, uint16_t product_id,
+                                                                 const std::function<void(usb::device)>& callback) {
+        handler.register_device_callback(vendor_id, product_id, callback);
+    }
+
+    LIBUSBCPP_API void hotplug_handler::update() {
+        handler.update();
+    }
+
+    LIBUSBCPP_API void hotplug_handler::run_async() {
+        terminate = false;
+        thread = std::thread([&] {
+            while (!terminate) {
+                handler.update();
+                std::this_thread::sleep_for(std::chrono::milliseconds(interval / 10));
+            }
+        });
+    }
+
+    LIBUSBCPP_API void hotplug_handler::stop_async() {
+        if (thread.joinable()) {
+            terminate = true;
+            thread.join();
+        }
+    }
+
+
 
 
 
@@ -234,6 +360,10 @@ namespace usb {
                     info.state = usb::state::INVALID_DRIVER;
                     callback(info, nullptr);
                 }
+                else {
+                    info.state = usb::state::OTHER_LIBUSB_ERROR;
+                    callback(info, nullptr);
+                }
 
                 continue;   // Jump back to top
             }
@@ -260,7 +390,7 @@ namespace usb {
         libusb_free_device_list(device_list, 1);
     }
 
-    LIBUSBCPP_API std::vector<device_info> scan_devices(const std::optional<ref<context>>& context) {
+    LIBUSBCPP_API std::vector<device_info> scan_devices(opt_context context) {
         std::vector<device_info> device_list;
 
         libusb_context* _context = context.has_value() ? (libusb_context*)context.value().get() : nullptr;
@@ -272,12 +402,12 @@ namespace usb {
         return device_list;
     }
 
-    LIBUSBCPP_API std::vector<usb::device> find_devices(
-            const context& context, uint16_t vendor_id, uint16_t product_id) {
+    LIBUSBCPP_API std::vector<usb::device> find_devices(uint16_t vendor_id, uint16_t product_id, opt_context context) {
         std::vector<usb::device> devices;
 
         // Following function calls the callback for every entry
-        scan_and_process_devices(context,
+        libusb_context* _context = context.has_value() ? (libusb_context*)context.value().get() : nullptr;
+        scan_and_process_devices(_context,
                                  [&] (const struct device_info& info, libusb_device_handle* handle){
             if (info.vendor_id == vendor_id && info.product_id == product_id) { // Correct device id
                 devices.emplace_back(std::make_shared<usb::basic_device>(handle, info));
@@ -289,20 +419,19 @@ namespace usb {
         return devices;
     }
 
-    LIBUSBCPP_API std::vector<usb::device> find_valid_devices(
-            const context& context, uint16_t vendor_id, uint16_t product_id) {
+    LIBUSBCPP_API std::vector<usb::device> find_valid_devices(uint16_t vendor_id, uint16_t product_id, opt_context context) {
         std::vector<usb::device> devices;
-        auto all_devices = find_devices(context, vendor_id, product_id);
+        auto all_devices = find_devices(vendor_id, product_id, context);
         for (const auto& device : all_devices) {
-            if (device->device_info.state == state::OPEN) {
+            if (device->info.state == state::OPEN) {
                 devices.emplace_back(device);
             }
         }
         return devices;
     }
 
-    LIBUSBCPP_API usb::device find_first_device(const context& context, uint16_t vendor_id, uint16_t product_id) {
-        auto devices = find_valid_devices(context, vendor_id, product_id);
+    LIBUSBCPP_API usb::device find_first_device(uint16_t vendor_id, uint16_t product_id, opt_context context) {
+        auto devices = find_valid_devices(vendor_id, product_id, context);
         for (auto& device : devices) {
             return device;
         }
